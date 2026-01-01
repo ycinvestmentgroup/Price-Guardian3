@@ -1,16 +1,9 @@
+
 import { GoogleGenAI, Type } from "@google/genai";
 
 export const extractInvoiceData = async (base64Data: string, mimeType: string = 'application/pdf') => {
   const model = 'gemini-3-flash-preview';
-  
-  // Exclusively obtain from process.env.API_KEY as per guidelines
-  const apiKey = process.env.API_KEY;
-
-  if (!apiKey) {
-    throw new Error("Missing API_KEY. Please set the 'API_KEY' environment variable in your Vercel project settings.");
-  }
-
-  const ai = new GoogleGenAI({ apiKey });
+  const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 
   try {
     const response = await ai.models.generateContent({
@@ -30,7 +23,9 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string = 
             2. Line Items: Extract name, quantity, unit price, and subtotal for every row in the table.
             3. Totals: Capture GST (tax) and the final Grand Total.
             4. Metadata: Invoice number, date (YYYY-MM-DD), and due date (YYYY-MM-DD).
-            5. If a field is missing, use null for strings and 0 for numbers.`,
+            5. Payment Details: Extract Bank Account details. Look specifically for 'EFT', 'BSB', 'Account Number', 'Acc No', 'Electronic Funds Transfer', or 'Payable to'. Also extract Credit Terms (e.g., 30 days, 7 days from invoice, etc).
+            6. Business Info: Extract ABN (Australian Business Number) or Tax ID, physical address, primary email, and telephone number.
+            7. If a field is missing, use null for strings and 0 for numbers.`,
           },
         ],
       },
@@ -50,6 +45,8 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string = 
             invoiceNumber: { type: Type.STRING },
             totalAmount: { type: Type.NUMBER },
             gstAmount: { type: Type.NUMBER },
+            bankAccount: { type: Type.STRING },
+            creditTerm: { type: Type.STRING },
             address: { type: Type.STRING },
             abn: { type: Type.STRING },
             tel: { type: Type.STRING },
@@ -81,9 +78,6 @@ export const extractInvoiceData = async (base64Data: string, mimeType: string = 
     return JSON.parse(resultText);
   } catch (error: any) {
     console.error("Gemini Extraction Error:", error);
-    if (error.message?.includes('403')) {
-      throw new Error("Authentication failed. Ensure your API_KEY is valid and has Gemini API enabled.");
-    }
     throw new Error(error.message || "Auditing failed due to a network or parsing error.");
   }
 };
