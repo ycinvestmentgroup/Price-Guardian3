@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useMemo } from 'react';
 import { 
   LayoutDashboard, Upload, History, CheckCircle2, Package, Wallet, 
@@ -16,20 +17,26 @@ interface Toast {
   type: 'success' | 'error' | 'info' | 'warning';
 }
 
+interface StoredAccount {
+  user: User;
+  password: string;
+}
+
 const App: React.FC = () => {
   // Auth State
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [isAuthenticating, setIsAuthenticating] = useState(true);
-  const [authMode, setAuthMode] = useState<'login' | 'signup'>('login');
   const [loginEmail, setLoginEmail] = useState('');
   const [loginPass, setLoginPass] = useState('');
 
-  // App State
+  // App Data State
   const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'history' | 'suppliers' | 'items' | 'variances' | 'gst' | 'team' | 'settings'>('dashboard');
   const [historyTab, setHistoryTab] = useState<'outstanding' | 'settled' | 'hold'>('outstanding');
   const [rawInvoices, setRawInvoices] = useState<Invoice[]>([]);
   const [masterItems, setMasterItems] = useState<MasterItem[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
+  
+  // UI State
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
@@ -40,39 +47,52 @@ const App: React.FC = () => {
   const [bulkSelection, setBulkSelection] = useState<Set<string>>(new Set());
   const [varianceSelection, setVarianceSelection] = useState<Set<string>>(new Set());
 
-  // Collaboration & Vault States
   const [vault, setVault] = useState<VaultConfig>({
     vaultId: 'VLT-A82J9Z',
     inboundEmail: 'audit-vlt-a82j9z@priceguardian.ai',
     isCloudSyncEnabled: true
   });
-  const [team, setTeam] = useState<TeamMember[]>([
-    { id: '1', name: 'Original User', email: 'owner@business.com', role: 'Admin', status: 'Online' }
-  ]);
 
-  // Initialization & Storage
+  // 1. Restore Session on Mount
   useEffect(() => {
-    const savedUser = localStorage.getItem('pg_auth_user');
-    const savedInvoices = localStorage.getItem('pg_invoices');
-    const savedMaster = localStorage.getItem('pg_master_rates');
-    const savedSuppliers = localStorage.getItem('pg_suppliers');
-    const savedVault = localStorage.getItem('pg_vault');
-
-    if (savedUser) setCurrentUser(JSON.parse(savedUser));
-    if (savedInvoices) setRawInvoices(JSON.parse(savedInvoices));
-    if (savedMaster) setMasterItems(JSON.parse(savedMaster));
-    if (savedSuppliers) setSuppliers(JSON.parse(savedSuppliers));
-    if (savedVault) setVault(JSON.parse(savedVault));
-    
+    const savedSession = localStorage.getItem('pg_current_session');
+    if (savedSession) {
+      setCurrentUser(JSON.parse(savedSession));
+    }
     setIsAuthenticating(false);
   }, []);
 
+  // 2. Load User-Specific Data when currentUser changes
   useEffect(() => {
     if (currentUser) {
-      localStorage.setItem('pg_invoices', JSON.stringify(rawInvoices));
-      localStorage.setItem('pg_master_rates', JSON.stringify(masterItems));
-      localStorage.setItem('pg_suppliers', JSON.stringify(suppliers));
-      localStorage.setItem('pg_vault', JSON.stringify(vault));
+      const id = currentUser.id;
+      const inv = localStorage.getItem(`pg_invoices_${id}`);
+      const mst = localStorage.getItem(`pg_master_${id}`);
+      const sup = localStorage.getItem(`pg_suppliers_${id}`);
+      const vlt = localStorage.getItem(`pg_vault_${id}`);
+
+      setRawInvoices(inv ? JSON.parse(inv) : []);
+      setMasterItems(mst ? JSON.parse(mst) : []);
+      setSuppliers(sup ? JSON.parse(sup) : []);
+      if (vlt) setVault(JSON.parse(vlt));
+      
+      localStorage.setItem('pg_current_session', JSON.stringify(currentUser));
+    } else {
+      // Clear data on logout
+      setRawInvoices([]);
+      setMasterItems([]);
+      setSuppliers([]);
+    }
+  }, [currentUser]);
+
+  // 3. Save Data whenever it changes
+  useEffect(() => {
+    if (currentUser) {
+      const id = currentUser.id;
+      localStorage.setItem(`pg_invoices_${id}`, JSON.stringify(rawInvoices));
+      localStorage.setItem(`pg_master_${id}`, JSON.stringify(masterItems));
+      localStorage.setItem(`pg_suppliers_${id}`, JSON.stringify(suppliers));
+      localStorage.setItem(`pg_vault_${id}`, JSON.stringify(vault));
     }
   }, [rawInvoices, masterItems, suppliers, vault, currentUser]);
 
@@ -82,30 +102,47 @@ const App: React.FC = () => {
     setTimeout(() => setToasts(prev => prev.filter(t => t.id !== id)), 6000);
   };
 
-  const handleLogin = (e: React.FormEvent) => {
+  const handleVaultAccess = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!loginEmail || !loginPass) return addToast("Credentials required", "error");
+    if (!loginEmail || !loginPass) return addToast("Email and Password required", "error");
+
+    const accountsJson = localStorage.getItem('pg_accounts_registry');
+    const accounts: StoredAccount[] = accountsJson ? JSON.parse(accountsJson) : [];
     
-    const mockUser: User = {
-      id: 'u-' + Date.now(),
-      name: loginEmail.split('@')[0].toUpperCase(),
-      email: loginEmail,
-      role: 'Admin',
-      organization: 'Guardian Enterprises',
-      lastLogin: new Date().toISOString(),
-      is2FAEnabled: false
-    };
-    setCurrentUser(mockUser);
-    localStorage.setItem('pg_auth_user', JSON.stringify(mockUser));
-    addToast(`Welcome back, ${mockUser.name}`, "success");
+    const normalizedEmail = loginEmail.toLowerCase().trim();
+    const existingAccount = accounts.find(acc => acc.user.email.toLowerCase() === normalizedEmail);
+
+    if (existingAccount) {
+      if (existingAccount.password !== loginPass) {
+        return addToast("Invalid password for this vault.", "error");
+      }
+      setCurrentUser(existingAccount.user);
+      addToast(`Vault restored: Welcome back, ${existingAccount.user.name}`, "success");
+    } else {
+      // Automatic first-time initialization
+      const newUser: User = {
+        id: 'u-' + Math.random().toString(36).substr(2, 9),
+        name: normalizedEmail.split('@')[0].toUpperCase(),
+        email: normalizedEmail,
+        role: 'Admin',
+        organization: 'Private Vault',
+        lastLogin: new Date().toISOString(),
+        is2FAEnabled: false
+      };
+      const updatedAccounts = [...accounts, { user: newUser, password: loginPass }];
+      localStorage.setItem('pg_accounts_registry', JSON.stringify(updatedAccounts));
+      setCurrentUser(newUser);
+      addToast(`New vault initialized for ${newUser.name}`, "success");
+    }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
-    localStorage.removeItem('pg_auth_user');
-    addToast("Securely logged out", "info");
+    localStorage.removeItem('pg_current_session');
+    addToast("Vault locked.", "info");
   };
 
+  // Logic Helpers
   const isInvoiceBackdated = (invoiceDateStr: string, masterLastUpdatedStr: string) => {
     if (!invoiceDateStr || !masterLastUpdatedStr) return false;
     const invDate = new Date(invoiceDateStr.split('T')[0]).getTime();
@@ -169,6 +206,18 @@ const App: React.FC = () => {
     return allHistory.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
   }, [masterItems]);
 
+  const stats = useMemo(() => {
+    const unpaid = enrichedInvoices.filter(i => !i.isPaid && !i.isHold);
+    const totalPayable = unpaid.reduce((sum, i) => sum + i.totalAmount, 0);
+    const totalGst = enrichedInvoices.reduce((sum, i) => sum + i.gstAmount, 0);
+    const supplierOutstanding: Record<string, number> = {};
+    unpaid.forEach(inv => {
+      supplierOutstanding[inv.supplierName] = (supplierOutstanding[inv.supplierName] || 0) + inv.totalAmount;
+    });
+    return { totalPayable, totalGst, totalCount: enrichedInvoices.length, supplierCount: suppliers.length, supplierOutstanding };
+  }, [enrichedInvoices, suppliers]);
+
+  // Action Handlers
   const updateMasterRate = (supplierName: string, itemName: string, newPrice: number, invoiceNum: string, invDate: string) => {
     setMasterItems(prev => {
       const existingIdx = prev.findIndex(m => m.supplierName === supplierName && m.name === itemName);
@@ -199,9 +248,11 @@ const App: React.FC = () => {
 
   const acceptSelectedVariances = () => {
     const selected = pendingVariances.filter(v => varianceSelection.has(v.key));
-    selected.forEach(v => updateMasterRate(v.supplierName, v.itemName, v.newPrice, v.invoiceNumber, v.date));
+    selected.forEach(v => {
+      updateMasterRate(v.supplierName, v.itemName, v.newPrice, v.invoiceNumber, v.date);
+    });
+    addToast(`Committed ${selected.length} baseline shifts.`, 'success');
     setVarianceSelection(new Set());
-    addToast(`Synced ${selected.length} rates to Team Vault.`, 'success');
   };
 
   const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -219,7 +270,8 @@ const App: React.FC = () => {
         const data: any = await extractInvoiceData(base64, file.type || 'application/pdf');
         
         const newInvoice: Invoice = {
-          ...data, id: `inv-${Date.now()}`, isPaid: false, isHold: false, status: 'matched', fileName: file.name, receivedVia: 'upload'
+          ...data, id: `inv-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`,
+          isPaid: false, isHold: false, status: 'matched', fileName: file.name, receivedVia: 'upload'
         };
 
         setSuppliers(prev => {
@@ -235,7 +287,7 @@ const App: React.FC = () => {
             const exists = next.find(m => m.supplierName === data.supplierName && m.name === item.name);
             if (!exists) {
               next.push({
-                id: `mstr-${Date.now()}`, supplierName: data.supplierName, name: item.name,
+                id: `mstr-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`, supplierName: data.supplierName, name: item.name,
                 currentPrice: item.unitPrice, lastUpdated: data.date, history: [{ date: data.date, price: item.unitPrice, variance: 0, percentChange: 0, source: 'audit', invoiceNumber: data.invoiceNumber, note: 'Initial Registration' }]
               });
             }
@@ -253,16 +305,17 @@ const App: React.FC = () => {
     setActiveTab('dashboard');
   };
 
-  const stats = useMemo(() => {
-    const unpaid = enrichedInvoices.filter(i => !i.isPaid && !i.isHold);
-    const totalPayable = unpaid.reduce((sum, i) => sum + i.totalAmount, 0);
-    const totalGst = enrichedInvoices.reduce((sum, i) => sum + i.gstAmount, 0);
-    const supplierOutstanding: Record<string, number> = {};
-    unpaid.forEach(inv => {
-      supplierOutstanding[inv.supplierName] = (supplierOutstanding[inv.supplierName] || 0) + inv.totalAmount;
-    });
-    return { totalPayable, totalGst, totalCount: enrichedInvoices.length, supplierCount: suppliers.length, supplierOutstanding };
-  }, [enrichedInvoices, suppliers]);
+  const removeInvoice = (id: string) => {
+    if (confirm("Permanently remove this audit record?")) {
+      setRawInvoices(prev => prev.filter(inv => inv.id !== id));
+      addToast("Record removed.", "info");
+      setBulkSelection(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+    }
+  };
 
   const bulkMarkStatus = (status: 'paid' | 'hold' | 'outstanding') => {
     setRawInvoices(prev => prev.map(inv => {
@@ -276,22 +329,10 @@ const App: React.FC = () => {
   };
 
   const bulkDelete = () => {
-    if (confirm(`Are you sure you want to remove ${bulkSelection.size} audited records?`)) {
+    if (confirm(`Remove ${bulkSelection.size} selected audit records?`)) {
       setRawInvoices(prev => prev.filter(inv => !bulkSelection.has(inv.id)));
-      addToast(`Permanently removed ${bulkSelection.size} audit records.`, 'warning');
+      addToast(`Removed ${bulkSelection.size} records.`, 'warning');
       setBulkSelection(new Set());
-    }
-  };
-
-  const removeInvoice = (id: string) => {
-    if (confirm("Remove this audit record?")) {
-      setRawInvoices(prev => prev.filter(inv => inv.id !== id));
-      addToast("Record removed from vault.", "info");
-      setBulkSelection(prev => {
-        const next = new Set(prev);
-        next.delete(id);
-        return next;
-      });
     }
   };
 
@@ -331,12 +372,7 @@ const App: React.FC = () => {
            </div>
 
            <div className="bg-slate-800/50 backdrop-blur-xl border border-white/10 rounded-[2.5rem] p-10 shadow-2xl">
-              <div className="flex space-x-2 mb-8 bg-slate-900/50 p-1.5 rounded-2xl border border-white/5">
-                 <button onClick={() => setAuthMode('login')} className={`flex-1 py-3 text-[10px] font-black uppercase rounded-xl transition-all ${authMode === 'login' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>Sign In</button>
-                 <button onClick={() => setAuthMode('signup')} className={`flex-1 py-3 text-[10px] font-black uppercase rounded-xl transition-all ${authMode === 'signup' ? 'bg-slate-800 text-white shadow-lg' : 'text-slate-500 hover:text-slate-300'}`}>New Vault</button>
-              </div>
-
-              <form onSubmit={handleLogin} className="space-y-6">
+              <form onSubmit={handleVaultAccess} className="space-y-6">
                  <div>
                     <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2 block ml-1">Work Email</label>
                     <div className="relative">
@@ -346,7 +382,7 @@ const App: React.FC = () => {
                  </div>
 
                  <div>
-                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2 block ml-1">Password</label>
+                    <label className="text-[9px] font-black text-slate-500 uppercase tracking-widest mb-2 block ml-1">Vault Password</label>
                     <div className="relative">
                        <Lock className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-600" size={18} />
                        <input type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} required className="w-full bg-slate-900/50 border border-white/5 rounded-2xl py-4 pl-12 pr-4 text-white text-xs font-bold outline-none focus:ring-2 focus:ring-blue-500 transition-all" placeholder="••••••••" />
@@ -354,12 +390,13 @@ const App: React.FC = () => {
                  </div>
 
                  <button type="submit" className="w-full bg-blue-600 hover:bg-blue-500 text-white py-5 rounded-2xl font-black uppercase text-xs tracking-widest shadow-2xl shadow-blue-500/20 transition-all active:scale-[0.98] mt-4 flex items-center justify-center space-x-3">
-                    <span>{authMode === 'login' ? 'Enter Vault' : 'Initialize Vault'}</span>
+                    <span>Access Vault</span>
                     <ArrowRight size={18} />
                  </button>
 
-                 <p className="text-center text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-6">
-                    {authMode === 'login' ? "Forgot your key?" : "Already have a vault?"} <span className="text-blue-500 cursor-pointer">Click Here</span>
+                 <p className="text-center text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-6 leading-relaxed">
+                    First time here? <br/>
+                    <span className="text-blue-500">Your vault will be initialized automatically.</span>
                  </p>
               </form>
            </div>
@@ -380,7 +417,6 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen flex bg-slate-50 font-sans text-slate-900 overflow-hidden print:bg-white relative">
       
-      {/* App Toast System */}
       <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[1000] space-y-2 w-full max-w-md px-4 no-print pointer-events-none">
          {toasts.map(t => (
            <div key={t.id} className={`p-4 rounded-2xl shadow-2xl border flex items-start space-x-3 animate-in slide-in-from-top duration-300 pointer-events-auto ${t.type === 'success' ? 'bg-emerald-600 text-white' : t.type === 'warning' ? 'bg-rose-600 text-white' : 'bg-slate-900 text-white'}`}>
