@@ -1,5 +1,4 @@
-
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   LayoutDashboard, Upload, History, CheckCircle2, Package, Wallet, 
   Check, ShoppingBag, Trash2, Banknote, CalendarDays, X, Zap, Menu, ShieldCheck, 
@@ -32,11 +31,19 @@ const App: React.FC = () => {
   // App Data State
   const [activeTab, setActiveTab] = useState<'dashboard' | 'upload' | 'history' | 'suppliers' | 'items' | 'variances' | 'gst' | 'team' | 'settings'>('dashboard');
   const [historyTab, setHistoryTab] = useState<'outstanding' | 'settled' | 'hold'>('outstanding');
+  
+  // Data States
   const [rawInvoices, setRawInvoices] = useState<Invoice[]>([]);
   const [masterItems, setMasterItems] = useState<MasterItem[]>([]);
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
-  
-  // UI State
+  const [vault, setVault] = useState<VaultConfig>({
+    vaultId: 'VLT-A82J9Z',
+    inboundEmail: 'audit-vlt-a82j9z@priceguardian.ai',
+    isCloudSyncEnabled: true
+  });
+
+  // UI & Persistence Guards
+  const [dataLoaded, setDataLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<string>('');
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
@@ -47,13 +54,7 @@ const App: React.FC = () => {
   const [bulkSelection, setBulkSelection] = useState<Set<string>>(new Set());
   const [varianceSelection, setVarianceSelection] = useState<Set<string>>(new Set());
 
-  const [vault, setVault] = useState<VaultConfig>({
-    vaultId: 'VLT-A82J9Z',
-    inboundEmail: 'audit-vlt-a82j9z@priceguardian.ai',
-    isCloudSyncEnabled: true
-  });
-
-  // 1. Restore Session on Mount
+  // 1. Session Restoration (Runs once on boot)
   useEffect(() => {
     const savedSession = localStorage.getItem('pg_current_session');
     if (savedSession) {
@@ -62,39 +63,45 @@ const App: React.FC = () => {
     setIsAuthenticating(false);
   }, []);
 
-  // 2. Load User-Specific Data when currentUser changes
+  // 2. Load User-Specific Data (Triggered when currentUser changes)
   useEffect(() => {
     if (currentUser) {
+      setDataLoaded(false); // Lock saving while we load
       const id = currentUser.id;
+      
       const inv = localStorage.getItem(`pg_invoices_${id}`);
       const mst = localStorage.getItem(`pg_master_${id}`);
       const sup = localStorage.getItem(`pg_suppliers_${id}`);
       const vlt = localStorage.getItem(`pg_vault_${id}`);
 
+      // Set state and then unlock saving
       setRawInvoices(inv ? JSON.parse(inv) : []);
       setMasterItems(mst ? JSON.parse(mst) : []);
       setSuppliers(sup ? JSON.parse(sup) : []);
       if (vlt) setVault(JSON.parse(vlt));
       
       localStorage.setItem('pg_current_session', JSON.stringify(currentUser));
+      
+      // Small timeout to ensure state has settled before allowing saves
+      setTimeout(() => setDataLoaded(true), 100);
     } else {
-      // Clear data on logout
       setRawInvoices([]);
       setMasterItems([]);
       setSuppliers([]);
+      setDataLoaded(false);
     }
   }, [currentUser]);
 
-  // 3. Save Data whenever it changes
+  // 3. Save Data (Only if dataLoaded is true to prevent overwriting with initial empty state)
   useEffect(() => {
-    if (currentUser) {
+    if (currentUser && dataLoaded) {
       const id = currentUser.id;
       localStorage.setItem(`pg_invoices_${id}`, JSON.stringify(rawInvoices));
       localStorage.setItem(`pg_master_${id}`, JSON.stringify(masterItems));
       localStorage.setItem(`pg_suppliers_${id}`, JSON.stringify(suppliers));
       localStorage.setItem(`pg_vault_${id}`, JSON.stringify(vault));
     }
-  }, [rawInvoices, masterItems, suppliers, vault, currentUser]);
+  }, [rawInvoices, masterItems, suppliers, vault, currentUser, dataLoaded]);
 
   const addToast = (message: string, type: Toast['type'] = 'info') => {
     const id = Date.now();
@@ -117,9 +124,9 @@ const App: React.FC = () => {
         return addToast("Invalid password for this vault.", "error");
       }
       setCurrentUser(existingAccount.user);
-      addToast(`Vault restored: Welcome back, ${existingAccount.user.name}`, "success");
+      addToast(`Access Granted: ${existingAccount.user.name}`, "success");
     } else {
-      // Automatic first-time initialization
+      // Auto-initialization
       const newUser: User = {
         id: 'u-' + Math.random().toString(36).substr(2, 9),
         name: normalizedEmail.split('@')[0].toUpperCase(),
@@ -132,12 +139,13 @@ const App: React.FC = () => {
       const updatedAccounts = [...accounts, { user: newUser, password: loginPass }];
       localStorage.setItem('pg_accounts_registry', JSON.stringify(updatedAccounts));
       setCurrentUser(newUser);
-      addToast(`New vault initialized for ${newUser.name}`, "success");
+      addToast(`Vault successfully initialized.`, "success");
     }
   };
 
   const handleLogout = () => {
     setCurrentUser(null);
+    setDataLoaded(false);
     localStorage.removeItem('pg_current_session');
     addToast("Vault locked.", "info");
   };
@@ -251,7 +259,7 @@ const App: React.FC = () => {
     selected.forEach(v => {
       updateMasterRate(v.supplierName, v.itemName, v.newPrice, v.invoiceNumber, v.date);
     });
-    addToast(`Committed ${selected.length} baseline shifts.`, 'success');
+    addToast(`Committed ${selected.length} shifts to baseline.`, 'success');
     setVarianceSelection(new Set());
   };
 
@@ -296,7 +304,7 @@ const App: React.FC = () => {
         });
 
         setRawInvoices(prev => [newInvoice, ...prev]);
-        addToast(`Audited & Synced: ${data.invoiceNumber}`, 'success');
+        addToast(`Audited: ${data.invoiceNumber}`, 'success');
       } catch (err: any) {
         addToast(`Audit Failed: ${err.message}`, 'error');
       }
@@ -324,12 +332,12 @@ const App: React.FC = () => {
       }
       return inv;
     }));
-    addToast(`Status updated for ${bulkSelection.size} records.`, 'success');
+    addToast(`Status updated.`, 'success');
     setBulkSelection(new Set());
   };
 
   const bulkDelete = () => {
-    if (confirm(`Remove ${bulkSelection.size} selected audit records?`)) {
+    if (confirm(`Remove ${bulkSelection.size} selected records?`)) {
       setRawInvoices(prev => prev.filter(inv => !bulkSelection.has(inv.id)));
       addToast(`Removed ${bulkSelection.size} records.`, 'warning');
       setBulkSelection(new Set());
@@ -346,7 +354,7 @@ const App: React.FC = () => {
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement("a");
     link.setAttribute("href", encodedUri);
-    link.setAttribute("download", `vault_export_${new Date().toISOString().split('T')[0]}.csv`);
+    link.setAttribute("download", `vault_export.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -395,8 +403,8 @@ const App: React.FC = () => {
                  </button>
 
                  <p className="text-center text-[9px] text-slate-500 font-bold uppercase tracking-widest mt-6 leading-relaxed">
-                    First time here? <br/>
-                    <span className="text-blue-500">Your vault will be initialized automatically.</span>
+                    Local vault identity: <br/>
+                    <span className="text-blue-500">Your profile restores automatically upon access.</span>
                  </p>
               </form>
            </div>
@@ -417,6 +425,7 @@ const App: React.FC = () => {
   return (
     <div className="min-h-screen flex bg-slate-50 font-sans text-slate-900 overflow-hidden print:bg-white relative">
       
+      {/* Toast System */}
       <div className="fixed top-6 left-1/2 -translate-x-1/2 z-[1000] space-y-2 w-full max-w-md px-4 no-print pointer-events-none">
          {toasts.map(t => (
            <div key={t.id} className={`p-4 rounded-2xl shadow-2xl border flex items-start space-x-3 animate-in slide-in-from-top duration-300 pointer-events-auto ${t.type === 'success' ? 'bg-emerald-600 text-white' : t.type === 'warning' ? 'bg-rose-600 text-white' : 'bg-slate-900 text-white'}`}>
@@ -427,6 +436,7 @@ const App: React.FC = () => {
          ))}
       </div>
 
+      {/* Navigation */}
       <nav className={`w-72 bg-slate-900 text-slate-400 flex flex-col shrink-0 fixed inset-y-0 left-0 lg:sticky lg:top-0 h-screen z-[100] transition-transform duration-300 no-print ${isSidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'}`}>
         <div className="p-10 flex items-center justify-between">
           <div className="flex items-center space-x-4">
@@ -468,13 +478,14 @@ const App: React.FC = () => {
         </div>
       </nav>
 
+      {/* Main Content Area */}
       <main className={`flex-1 overflow-y-auto p-4 lg:p-12 relative h-screen custom-scrollbar transition-all`}>
         <header className="flex justify-between items-center mb-8 no-print sticky top-0 bg-slate-50/90 backdrop-blur-md py-4 z-[80] -mx-4 px-4 lg:-mx-12 lg:px-12">
           <div><h1 className="text-2xl lg:text-3xl font-black text-slate-900 uppercase tracking-tighter">{activeTab.replace('-', ' ')}</h1></div>
           <div className="flex items-center space-x-4">
-             <button onClick={() => addToast("Fetching Cloud Sync...", "info")} className="hidden lg:flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase hover:bg-slate-50 transition-all shadow-sm">
+             <button onClick={() => addToast("Vault Synchronized", "info")} className="hidden lg:flex items-center space-x-2 px-4 py-2 bg-white border border-slate-200 rounded-xl text-[10px] font-black uppercase hover:bg-slate-50 transition-all shadow-sm">
                 <RefreshCcw size={14} className="text-blue-600" />
-                <span>Auto-Refresh Vault</span>
+                <span>Sync Cloud</span>
              </button>
              <button onClick={() => setIsSidebarOpen(true)} className="lg:hidden p-2 bg-white rounded-xl shadow-sm border border-slate-200"><Menu size={24} /></button>
           </div>
@@ -498,7 +509,10 @@ const App: React.FC = () => {
                    </h3>
                    <div className="space-y-4">
                       {Object.entries(stats.supplierOutstanding).length === 0 ? (
-                        <p className="text-[10px] font-bold text-slate-400 uppercase text-center py-10">All accounts settled</p>
+                        <div className="text-center py-10">
+                          <CheckCircle2 size={32} className="mx-auto text-emerald-500 mb-2" />
+                          <p className="text-[10px] font-bold text-slate-400 uppercase">All accounts settled</p>
+                        </div>
                       ) : (
                         Object.entries(stats.supplierOutstanding).map(([name, amount]) => (
                           <div key={name} className="flex items-center justify-between p-4 bg-slate-50 rounded-2xl border border-slate-100 group hover:border-blue-200 transition-colors">
@@ -834,7 +848,7 @@ const App: React.FC = () => {
             return inv;
           }));
         }} />}
-        {selectedSupplierId && <SupplierEditModal supplier={suppliers.find(s => s.id === selectedSupplierId)!} onClose={() => setSelectedSupplierId(null)} onSave={(updated: Supplier) => { setSuppliers(prev => prev.map(s => s.id === updated.id ? updated : s)); addToast(`Updated vendor profile for ${updated.name}`, 'success'); setSelectedSupplierId(null); }} />}
+        {selectedSupplierId && <SupplierEditModal supplier={suppliers.find(s => s.id === selectedSupplierId)!} onClose={() => setSelectedSupplierId(null)} onSave={(updated: Supplier) => { setSuppliers(prev => prev.map(s => s.id === updated.id ? updated : s)); addToast(`Updated vendor profile`, 'success'); setSelectedSupplierId(null); }} />}
         {selectedMasterItemId && <MasterRateHistoryModal item={masterItems.find(m => m.id === selectedMasterItemId)!} onClose={() => setSelectedMasterItemId(null)} />}
       </main>
 
@@ -915,7 +929,12 @@ const GSTRecordsView = ({ invoices }: { invoices: Invoice[] }) => {
 
   return (
     <div className="space-y-10">
-      {recordsByMonth.map(([month, data]) => (
+      {recordsByMonth.length === 0 ? (
+        <div className="text-center py-20 bg-white rounded-[2.5rem] border border-slate-200">
+           <Banknote size={48} className="mx-auto text-slate-200 mb-4" />
+           <p className="text-[10px] font-bold text-slate-400 uppercase">No GST records found in vault</p>
+        </div>
+      ) : recordsByMonth.map(([month, data]) => (
         <div key={month} className="bg-white rounded-[2.5rem] border border-slate-200 overflow-hidden shadow-sm">
            <div className="px-10 py-8 bg-slate-900 text-white flex justify-between items-center">
               <h4 className="font-black uppercase text-base tracking-widest flex items-center"><CalendarDays size={24} className="mr-4 text-blue-400" /> {new Date(month).toLocaleDateString(undefined, { month: 'long', year: 'numeric' })}</h4>
