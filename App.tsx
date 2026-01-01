@@ -6,7 +6,7 @@ import {
   TriangleAlert, Files, ArrowUpRight, Save, History as HistoryIcon,
   Mail, Hash, Image as ImageIcon, BellRing, TrendingDown, TrendingUp, ChevronDown, ChevronRight,
   Info, CreditCard, Clock, PauseCircle, ArrowRight, UserCircle, MapPin, Phone, Download, Printer,
-  Square, CheckSquare
+  Square, CheckSquare, Plus
 } from 'lucide-react';
 import { extractInvoiceData } from './services/geminiService.ts';
 import { Invoice, User, InvoiceItem, Supplier, MasterItem, PriceHistoryEntry } from './types.ts';
@@ -292,10 +292,17 @@ const App: React.FC = () => {
           isPaid: false, isHold: false, status: 'matched', fileName: file.name
         };
 
-        // Supplier Registry Update
+        // Supplier Registry Update: Maintain existing data if new document lacks it
         setSuppliers(prev => {
           const existing = prev.find(s => s.name === data.supplierName);
-          const supDetails = { bankAccount: data.bankAccount, address: data.address, abn: data.abn, tel: data.tel, email: data.email, creditTerm: data.creditTerm };
+          const supDetails = { 
+            bankAccount: data.bankAccount || existing?.bankAccount, 
+            address: data.address || existing?.address, 
+            abn: data.abn || existing?.abn, 
+            tel: data.tel || existing?.tel, 
+            email: data.email || existing?.email, 
+            creditTerm: data.creditTerm || existing?.creditTerm 
+          };
           if (existing) return prev.map(s => s.name === data.supplierName ? { ...s, ...supDetails } : s);
           return [...prev, { id: `sup-${Date.now()}`, name: data.supplierName, totalSpent: 0, ...supDetails }];
         });
@@ -692,7 +699,23 @@ const App: React.FC = () => {
                    </div>
                    <div className="mt-6 pt-6 border-t border-slate-100 bg-slate-50 -mx-8 -mb-8 p-6">
                       <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest mb-2">Settlement Intel</p>
-                      <div className="flex items-center text-slate-900"><CreditCard size={14} className="mr-3 opacity-40" /> <span className="text-xs font-black uppercase truncate">{sup.bankAccount || 'Bank Details Pending'}</span></div>
+                      <div className="flex items-center justify-between text-slate-900 group/bank">
+                         <div className="flex items-center min-w-0">
+                            <CreditCard size={14} className="mr-3 opacity-40 shrink-0" />
+                            <span className={`text-xs font-black uppercase truncate ${!sup.bankAccount ? 'text-rose-500 italic' : ''}`}>
+                               {sup.bankAccount || 'Bank Details Pending'}
+                            </span>
+                         </div>
+                         {!sup.bankAccount && (
+                           <button 
+                             onClick={(e) => { e.stopPropagation(); setSelectedSupplierId(sup.id); }}
+                             className="p-1.5 hover:bg-slate-200 rounded-lg text-blue-600 transition-colors"
+                             title="Add Bank Details"
+                           >
+                             <Plus size={14} />
+                           </button>
+                         )}
+                      </div>
                    </div>
                 </div>
               ))}
